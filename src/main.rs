@@ -234,10 +234,24 @@ fn main() {
             let import_table = &bytes[base.. base + import_table_size];
             println!("{import_table:?}");
             for offset in (0 .. import_table_size).step_by(size_of::<ImageImportDescriptor>()) {
-                let import_descriptor: &ImageImportDescriptor = unsafe { transmute(bytes[offset..].as_ptr()) };
+                let import_descriptor: &ImageImportDescriptor = unsafe { transmute(import_table[offset..].as_ptr()) };
                 println!("{import_descriptor:?}");
                 let name = import_descriptor.name;
-                println!("name 0x{:08x}", name);
+                if name >= range.start && name < range.end {
+                    let ptr = (name - virtual_address + pointer_to_raw_data) as usize;
+                    let mut buf_name = String::new();
+                    for offset in 0 .. {
+                        let c = bytes[ptr + offset];
+                        if c > 0 {
+                            buf_name.push(c as char);
+                        } else {
+                            break;
+                        }
+                    }
+                    println!("name {buf_name:?}");
+                } else {
+                    println!("name 0x{:08x}", name);
+                }
             }
 
         }
