@@ -121,6 +121,9 @@ impl ImageSectionHeader {
     fn virtual_address_range(&self) -> Range<u32> {
         self.virtual_address .. self.virtual_address + self.size_of_raw_data
     }
+    fn in_range(&self, val: u32) -> bool {
+        val >= self.virtual_address && val < self.virtual_address + self.size_of_raw_data
+    }
 }
 
 impl fmt::Debug for ImageSectionHeader {
@@ -153,7 +156,7 @@ impl fmt::Debug for ImageSectionHeader {
 
 #[repr(packed)]
 struct ImageImportDescriptor {
-    characteristics: u32,
+    original_first_thunk: u32,
     time_date_stamp: u32,
     forwarder_chain: u32,
     name: u32,
@@ -162,15 +165,48 @@ struct ImageImportDescriptor {
 
 impl fmt::Debug for ImageImportDescriptor {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let characteristics = self.characteristics;
+        let original_first_thunk = self.original_first_thunk;
         let time_date_stamp = self.time_date_stamp;
         let forwarder_chain = self.forwarder_chain;
         let name = self.name;
         let first_thunk = self.first_thunk;
         write!(f, "ImageImportDescriptor")?;
         write!(f, " {{ ")?;
-        write!(f, "characteristics: 0x{characteristics:08x}, time_date_stamp: 0x{time_date_stamp:08x}, forwarder_chain: 0x{forwarder_chain:08x}, name: 0x{name:08x}, first_thunk: 0x{first_thunk:08x}")?;
+        write!(f, "original_first_thunk: 0x{original_first_thunk:08x}, time_date_stamp: 0x{time_date_stamp:08x}, forwarder_chain: 0x{forwarder_chain:08x}, name: 0x{name:08x}, first_thunk: 0x{first_thunk:08x}")?;
         write!(f, " }}")
+    }
+}
+
+#[repr(packed)]
+struct ImageImportByName {
+    hint: u16,
+    name: [u8],
+}
+
+fn show_image_import_by_name(ptr: &[u8]) {
+    let ptr: &ImageImportByName = unsafe { transmute(ptr) };
+    let mut buf_name = String::new();
+    let name = &ptr.name;
+    // print!("name [");
+    // for i in 0 .. 32 {
+    //     if i > 0 {
+    //         print!(", ");
+    //     }
+    //     print!("0x{:02x}", name[i]);
+    // }
+    // println!("]");
+    for &c in name {
+        if c > 0 {
+            buf_name.push(c as char);
+        } else {
+            break;
+        }
+    }
+    if buf_name.is_empty() {
+        let hint = ptr.hint;
+        println!("hint 0x{hint:04x} ({}, {})", hint % 256, hint / 256);
+    } else {
+        println!("name {buf_name:?}");
     }
 }
 
@@ -236,6 +272,7 @@ fn main() {
                 let import_descriptor: &ImageImportDescriptor = unsafe { transmute(import_table[offset..].as_ptr()) };
                 println!("{import_descriptor:?}");
                 let name = import_descriptor.name;
+                println!("name 0x{:08x}", name);
                 if name >= range.start && name < range.end {
                     let ptr = (name - virtual_address + pointer_to_raw_data) as usize;
                     let section_size = buf_section_header.size_of_raw_data;
@@ -251,7 +288,39 @@ fn main() {
                     }
                     println!("name {buf_name:?}");
                 } else {
-                    println!("name 0x{:08x}", name);
+                    break;
+                }
+                // let original_first_thunk = import_descriptor.original_first_thunk;
+                // if buf_section_header.in_range(original_first_thunk) {
+                //     let file_offset = (original_first_thunk - virtual_address + pointer_to_raw_data) as usize;
+                //     println!("Try original_first_thunk 0x{original_first_thunk:08x} offset 0x{file_offset:08x}");
+                //     // show_image_import_by_name(&bytes[file_offset..]);
+                //     for ptr in (file_offset ..).step_by(4) {
+                //         let ptr: &u32 = unsafe { transmute(bytes[ptr..].as_ptr()) };
+                //         if *ptr > 0 {
+                //             show_image_import_by_name(&bytes[(*ptr - virtual_address + pointer_to_raw_data) as usize..]);
+                //         } else {
+                //             break;
+                //         }
+                //     }
+                // } else {
+                //     println!("original_first_thunk 0x{original_first_thunk:08x} missing");
+                // }
+                let first_thunk = import_descriptor.first_thunk;
+                if buf_section_header.in_range(first_thunk) {
+                    let file_offset = (first_thunk - virtual_address + pointer_to_raw_data) as usize;
+                    // println!("Try first_thunk 0x{first_thunk:08x} offset 0x{file_offset:08x}");
+                    // show_image_import_by_name(&bytes[file_offset..]);
+                    for ptr in (file_offset ..).step_by(4) {
+                        let ptr: &u32 = unsafe { transmute(bytes[ptr..].as_ptr()) };
+                        if *ptr > 0 {
+                            show_image_import_by_name(&bytes[(*ptr - virtual_address + pointer_to_raw_data) as usize..]);
+                        } else {
+                            break;
+                        }
+                    }
+                } else {
+                    println!("first_thunk 0x{first_thunk:08x} missing");
                 }
             }
 
