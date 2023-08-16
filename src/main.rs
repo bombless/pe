@@ -232,16 +232,17 @@ fn main() {
             let base = (import_table_address - virtual_address + pointer_to_raw_data) as usize;
             println!("base 0x{base:08x}");
             let import_table = &bytes[base.. base + import_table_size];
-            println!("{import_table:?}");
             for offset in (0 .. import_table_size).step_by(size_of::<ImageImportDescriptor>()) {
                 let import_descriptor: &ImageImportDescriptor = unsafe { transmute(import_table[offset..].as_ptr()) };
                 println!("{import_descriptor:?}");
                 let name = import_descriptor.name;
                 if name >= range.start && name < range.end {
                     let ptr = (name - virtual_address + pointer_to_raw_data) as usize;
+                    let section_size = buf_section_header.size_of_raw_data;
+                    let range_end = (name - virtual_address + pointer_to_raw_data + section_size) as usize;
                     let mut buf_name = String::new();
-                    for offset in 0 .. {
-                        let c = bytes[ptr + offset];
+                    for offset in ptr .. range_end{
+                        let c = bytes[offset];
                         if c > 0 {
                             buf_name.push(c as char);
                         } else {
