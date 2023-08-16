@@ -130,6 +130,7 @@ fn main() {
     println!("{buf_image_file_header:?}");
     let machine = buf_image_file_header.machine;
     println!("machine {machine:04x}");
+
     let size_of_optional_header = buf_image_file_header.size_of_optional_header;
     println!("size_of_optional_header {size_of_optional_header:04x}, expect {:04x}", size_of::<ImageOptionalHeader>());
 
@@ -137,7 +138,7 @@ fn main() {
 
     let mut offset = offset_image_file_header + size_of::<ImageFileHeader>() + size_of::<ImageOptionalHeader>();
 
-    for _ in 0 .. buf_image_file_header.number_of_sections - 1 {
+    for _ in 0 .. buf_image_file_header.number_of_sections {
         let mut buf_section_header = [0u8; size_of::<ImageSectionHeader>()];
 
         buf_section_header.copy_from_slice(&bytes[offset..offset+size_of::<ImageSectionHeader>()]);
@@ -147,9 +148,10 @@ fn main() {
         let name = buf_section_header.name;
         let mut buf_name = String::new();
         for i in 0 .. 8 {
-            if name[i] > 0 {
-                buf_name.push(name[i] as char);
+            if name[i] == 0 {
+                break;
             }
+            buf_name.push(name[i] as char);
         }
         println!("name {buf_name}");
         offset += size_of::<ImageSectionHeader>();
