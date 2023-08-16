@@ -1,3 +1,5 @@
+use std::fmt;
+
 #[repr(packed)]
 struct DosHeader {
     magic: u16,
@@ -85,10 +87,17 @@ struct ImageOptionalHeader {
 }
 
 #[repr(packed)]
-#[derive(Debug)]
 struct ImageDataDirectory {
     virtual_address: u32,
     size: u32,
+}
+
+impl fmt::Debug for ImageDataDirectory {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let virtual_address = self.virtual_address;
+        let size = self.size;
+        write!(f, "ImageDataDirectory {{ virtual_address: 0x{virtual_address:08x}, size: 0x{size:08x} }}")
+    }
 }
 
 
@@ -104,6 +113,27 @@ struct ImageSectionHeader {
     number_of_relocations: u16,
     number_of_line_numbers: u16,
     characteristics: u32,
+}
+
+impl fmt::Debug for ImageSectionHeader {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let address = self.address;
+        let virtual_address = self.virtual_address;
+        let size_of_raw_data = self.size_of_raw_data;
+        let pointer_to_raw_data = self.pointer_to_raw_data;
+        
+        let name = self.name;
+        let mut buf_name = String::new();
+        for i in 0 .. 8 {
+            if name[i] == 0 {
+                break;
+            }
+            buf_name.push(name[i] as char);
+        }
+        write!(f, "ImageSectionHeader {{")?;
+        write!(f, " name: {buf_name}, address: 0x{address:08x}, virtual_address: 0x{virtual_address:08x}, size_of_raw_data: 0x{size_of_raw_data:08x}, pointer_to_raw_data: 0x{pointer_to_raw_data:08x}")?;
+        write!(f, " }}")
+    }
 }
 
 use std::mem::{size_of, transmute};
@@ -123,7 +153,9 @@ fn main() {
     let offset_pe_header = size_dos_header as usize;
     let offset_image_file_header = offset_pe_header + 4;
 
-    buf_image_file_header.copy_from_slice(&bytes[offset_image_file_header .. offset_image_file_header + size_of::<ImageFileHeader>()]);
+    let offset_image_optional_header = offset_image_file_header + size_of::<ImageFileHeader>();
+
+    buf_image_file_header.copy_from_slice(&bytes[offset_image_file_header .. offset_image_optional_header]);
 
     let buf_image_file_header: &ImageFileHeader = unsafe { transmute(&buf_image_file_header) };
 
@@ -134,9 +166,15 @@ fn main() {
     let size_of_optional_header = buf_image_file_header.size_of_optional_header;
     println!("size_of_optional_header {size_of_optional_header:04x}, expect {:04x}", size_of::<ImageOptionalHeader>());
 
-    println!("nt header {:x}", size_of::<ImageFileHeader>() + size_of::<ImageOptionalHeader>() + 4);
+    let mut buf_image_optional_header = [0u8; size_of::<ImageOptionalHeader>()];
+    buf_image_optional_header.copy_from_slice(&bytes[offset_image_optional_header .. offset_image_optional_header + size_of::<ImageOptionalHeader>()]);
 
-    let mut offset = offset_image_file_header + size_of::<ImageFileHeader>() + size_of::<ImageOptionalHeader>();
+    let buf_image_optional_header: &ImageOptionalHeader = unsafe { transmute(&buf_image_optional_header) };
+
+    println!("export_table {:?}", buf_image_optional_header.export_table);
+    println!("import_table {:?}", buf_image_optional_header.import_table);
+
+    let mut offset = offset_image_optional_header + size_of::<ImageOptionalHeader>();
 
     for _ in 0 .. buf_image_file_header.number_of_sections {
         let mut buf_section_header = [0u8; size_of::<ImageSectionHeader>()];
@@ -144,16 +182,7 @@ fn main() {
         buf_section_header.copy_from_slice(&bytes[offset..offset+size_of::<ImageSectionHeader>()]);
 
         let buf_section_header: &ImageSectionHeader = unsafe { transmute(&buf_section_header) };
-
-        let name = buf_section_header.name;
-        let mut buf_name = String::new();
-        for i in 0 .. 8 {
-            if name[i] == 0 {
-                break;
-            }
-            buf_name.push(name[i] as char);
-        }
-        println!("name {buf_name}");
+        println!("{buf_section_header:?}");
         offset += size_of::<ImageSectionHeader>();
     }
 
