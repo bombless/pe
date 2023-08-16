@@ -1,4 +1,6 @@
 use std::fmt;
+use std::ops::Range;
+use std::mem::{size_of, transmute};
 
 #[repr(packed)]
 struct DosHeader {
@@ -115,6 +117,12 @@ struct ImageSectionHeader {
     characteristics: u32,
 }
 
+impl ImageSectionHeader {
+    fn virtual_address_range(&self) -> Range<u32> {
+        self.virtual_address .. self.virtual_address + self.size_of_raw_data
+    }
+}
+
 impl fmt::Debug for ImageSectionHeader {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let address = self.address;
@@ -130,13 +138,41 @@ impl fmt::Debug for ImageSectionHeader {
             }
             buf_name.push(name[i] as char);
         }
-        write!(f, "ImageSectionHeader {{")?;
-        write!(f, " name: {buf_name}, address: 0x{address:08x}, virtual_address: 0x{virtual_address:08x}, size_of_raw_data: 0x{size_of_raw_data:08x}, pointer_to_raw_data: 0x{pointer_to_raw_data:08x}")?;
+        write!(f, "ImageSectionHeader")?;
+        let from = pointer_to_raw_data;
+        let to = from + size_of_raw_data;
+        let map_from = virtual_address;
+        let map_to = map_from + size_of_raw_data;
+        write!(f, "(0x{from:08x}..0x{to:08x} => 0x{map_from:08x}..{map_to:08x})")?;
+        write!(f, " {{ ")?;
+        write!(f, "name: {buf_name}")?;
+        write!(f, ", address: 0x{address:08x}, virtual_address: 0x{virtual_address:08x}, size_of_raw_data: 0x{size_of_raw_data:08x}, pointer_to_raw_data: 0x{pointer_to_raw_data:08x}")?;
         write!(f, " }}")
     }
 }
 
-use std::mem::{size_of, transmute};
+#[repr(packed)]
+struct ImageImportDescriptor {
+    characteristics: u32,
+    time_date_stamp: u32,
+    forwarder_chain: u32,
+    name: u32,
+    first_thunk: u32,
+}
+
+impl fmt::Debug for ImageImportDescriptor {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let characteristics = self.characteristics;
+        let time_date_stamp = self.time_date_stamp;
+        let forwarder_chain = self.forwarder_chain;
+        let name = self.name;
+        let first_thunk = self.first_thunk;
+        write!(f, "ImageImportDescriptor")?;
+        write!(f, " {{ ")?;
+        write!(f, "characteristics: 0x{characteristics:08x}, time_date_stamp: 0x{time_date_stamp:08x}, forwarder_chain: 0x{forwarder_chain:08x}, name: 0x{name:08x}, first_thunk: 0x{first_thunk:08x}")?;
+        write!(f, " }}")
+    }
+}
 
 fn main() {
     let bytes = include_bytes!("../pe.exe");
@@ -173,6 +209,8 @@ fn main() {
 
     println!("export_table {:?}", buf_image_optional_header.export_table);
     println!("import_table {:?}", buf_image_optional_header.import_table);
+    let image_base = buf_image_optional_header.image_base;
+    println!("image_base 0x{image_base:08x}");
 
     let mut offset = offset_image_optional_header + size_of::<ImageOptionalHeader>();
 
@@ -183,6 +221,28 @@ fn main() {
 
         let buf_section_header: &ImageSectionHeader = unsafe { transmute(&buf_section_header) };
         println!("{buf_section_header:?}");
+        let pointer_to_raw_data = buf_section_header.pointer_to_raw_data;
+        let virtual_address = buf_section_header.virtual_address;
+        let range = buf_section_header.virtual_address_range();
+        let import_table_address = buf_image_optional_header.import_table.virtual_address;
+        if import_table_address >= range.start && import_table_address < range.end {
+            let import_table_size = buf_image_optional_header.import_table.size as usize;
+            println!("import table found (size 0x{import_table_size:08x})");
+            println!("struct size 0x{:08x} remaining 0x{:08x}", size_of::<ImageImportDescriptor>(), import_table_size % size_of::<ImageImportDescriptor>());
+            let base = (import_table_address - virtual_address + pointer_to_raw_data) as usize;
+            println!("base 0x{base:08x}");
+            let import_table = &bytes[base.. base + import_table_size];
+            println!("{import_table:?}");
+            for offset in (0 .. import_table_size).step_by(size_of::<ImageImportDescriptor>()) {
+                let import_descriptor: &ImageImportDescriptor = unsafe { transmute(bytes[offset..].as_ptr()) };
+                println!("{import_descriptor:?}");
+                let name = import_descriptor.name;
+                println!("name 0x{:08x}", name);
+            }
+
+        }
+        println!("{virtual_address:08x} + {pointer_to_raw_data:08x} - {image_base:08x}");
+        // println!("raw 0x{:08x}", virtual_address + pointer_to_raw_data - image_base);
         offset += size_of::<ImageSectionHeader>();
     }
 
