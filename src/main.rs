@@ -3,6 +3,7 @@ use std::ops::Range;
 use std::mem::{size_of, transmute};
 
 #[repr(packed)]
+#[allow(dead_code)]
 struct DosHeader {
     magic: u16,
     cblp: u16,
@@ -27,6 +28,7 @@ struct DosHeader {
 
 #[repr(packed)]
 #[derive(Debug)]
+#[allow(dead_code)]
 struct ImageFileHeader {
     machine: u16,
     number_of_sections: u16,
@@ -38,6 +40,7 @@ struct ImageFileHeader {
 }
 
 #[repr(packed)]
+#[allow(dead_code)]
 struct ImageOptionalHeader {
     magic: u16,
     major_linker_version: u8,
@@ -89,6 +92,7 @@ struct ImageOptionalHeader {
 }
 
 #[repr(packed)]
+#[allow(dead_code)]
 struct ImageDataDirectory {
     virtual_address: u32,
     size: u32,
@@ -104,6 +108,7 @@ impl fmt::Debug for ImageDataDirectory {
 
 
 #[repr(packed)]
+#[allow(dead_code)]
 struct ImageSectionHeader {
     name: [u8; 8],
     address: u32,
@@ -148,7 +153,7 @@ impl fmt::Debug for ImageSectionHeader {
         let map_to = map_from + size_of_raw_data;
         write!(f, "(0x{from:08x}..0x{to:08x} => 0x{map_from:08x}..{map_to:08x})")?;
         write!(f, " {{ ")?;
-        write!(f, "name: {buf_name}")?;
+        write!(f, "name: {buf_name:?}")?;
         write!(f, ", address: 0x{address:08x}, virtual_address: 0x{virtual_address:08x}, size_of_raw_data: 0x{size_of_raw_data:08x}, pointer_to_raw_data: 0x{pointer_to_raw_data:08x}")?;
         write!(f, " }}")
     }
@@ -206,12 +211,16 @@ fn show_image_import_by_name(ptr: &[u8]) {
         let hint = ptr.hint;
         println!("hint 0x{hint:04x} ({}, {})", hint % 256, hint / 256);
     } else {
-        println!("name {buf_name:?}");
+        println!("+ {buf_name:?}");
     }
 }
 
 fn main() {
-    let bytes = include_bytes!("../pe.exe");
+    dump(include_bytes!("../7-zip.dll"));
+    dump(include_bytes!("../unzip.dll"));
+}
+
+fn dump(bytes: &[u8]) {
     let mut buf_dos_header = [0u8; size_of::<DosHeader>()];
 
     buf_dos_header.copy_from_slice(&bytes[0 .. size_of::<DosHeader>()]);
@@ -231,7 +240,6 @@ fn main() {
 
     let buf_image_file_header: &ImageFileHeader = unsafe { transmute(&buf_image_file_header) };
 
-    println!("{buf_image_file_header:?}");
     let machine = buf_image_file_header.machine;
     println!("machine {machine:04x}");
 
@@ -272,7 +280,7 @@ fn main() {
                 let import_descriptor: &ImageImportDescriptor = unsafe { transmute(import_table[offset..].as_ptr()) };
                 println!("{import_descriptor:?}");
                 let name = import_descriptor.name;
-                println!("name 0x{:08x}", name);
+                // println!("name 0x{:08x}", name);
                 if name >= range.start && name < range.end {
                     let ptr = (name - virtual_address + pointer_to_raw_data) as usize;
                     let section_size = buf_section_header.size_of_raw_data;
@@ -286,7 +294,7 @@ fn main() {
                             break;
                         }
                     }
-                    println!("name {buf_name:?}");
+                    println!("dll name {buf_name:?}");
                 } else {
                     break;
                 }
@@ -314,7 +322,14 @@ fn main() {
                     for ptr in (file_offset ..).step_by(4) {
                         let ptr: &u32 = unsafe { transmute(bytes[ptr..].as_ptr()) };
                         if *ptr > 0 {
-                            show_image_import_by_name(&bytes[(*ptr - virtual_address + pointer_to_raw_data) as usize..]);
+                            // println!("ptr 0x{:08x}", *ptr);
+                            let offset = (*ptr - virtual_address + pointer_to_raw_data) as usize;
+                            if bytes.len() <= offset {
+                                println!("offset 0x{offset:08x}");
+                                println!("offset in the wild");
+                                continue;
+                            }
+                            show_image_import_by_name(&bytes[offset..]);
                         } else {
                             break;
                         }
@@ -325,7 +340,6 @@ fn main() {
             }
 
         }
-        println!("{virtual_address:08x} + {pointer_to_raw_data:08x} - {image_base:08x}");
         // println!("raw 0x{:08x}", virtual_address + pointer_to_raw_data - image_base);
         offset += size_of::<ImageSectionHeader>();
     }
