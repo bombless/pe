@@ -1,6 +1,125 @@
 use std::fmt;
 use std::ops::Range;
 use std::mem::{size_of, transmute};
+use std::collections::HashMap;
+
+#[allow(unused)]
+struct Pe<'a> {
+    bytes: &'a [u8],
+    sections: Vec<ImageSectionHeader>,
+    imported: HashMap<&'a str, Vec<&'a str>>,
+}
+
+impl<'a> Pe<'a> {
+    fn load(bytes: &'a [u8]) -> Self {
+        let mut buf_dos_header = [0u8; size_of::<DosHeader>()];
+
+        buf_dos_header.copy_from_slice(&bytes[0 .. size_of::<DosHeader>()]);
+    
+        let buf_dos_header: &DosHeader = unsafe { transmute(&buf_dos_header) };
+    
+        let size_dos_header = buf_dos_header.lfanew;
+        
+        let mut buf_image_file_header = [0u8; size_of::<ImageFileHeader>()];
+    
+        let offset_pe_header = size_dos_header as usize;
+        let offset_image_file_header = offset_pe_header + 4;
+    
+        let offset_image_optional_header = offset_image_file_header + size_of::<ImageFileHeader>();
+    
+        buf_image_file_header.copy_from_slice(&bytes[offset_image_file_header .. offset_image_optional_header]);
+    
+        let buf_image_file_header: &ImageFileHeader = unsafe { transmute(&buf_image_file_header) };
+    
+        let machine = buf_image_file_header.machine;
+        println!("machine {machine:04x}");
+    
+        let size_of_optional_header = buf_image_file_header.size_of_optional_header;
+        println!("size_of_optional_header {size_of_optional_header:04x}, expect {:04x}", size_of::<ImageOptionalHeader>());
+    
+        let mut buf_image_optional_header = [0u8; size_of::<ImageOptionalHeader>()];
+        buf_image_optional_header.copy_from_slice(&bytes[offset_image_optional_header .. offset_image_optional_header + size_of::<ImageOptionalHeader>()]);
+    
+        let buf_image_optional_header: &ImageOptionalHeader = unsafe { transmute(&buf_image_optional_header) };
+
+        let mut sections = Vec::new();
+        let mut imported = HashMap::new();
+    
+        let mut offset = offset_image_optional_header + size_of::<ImageOptionalHeader>();
+    
+        for _ in 0 .. buf_image_file_header.number_of_sections {
+            let mut buf_section_header = [0u8; size_of::<ImageSectionHeader>()];
+    
+            buf_section_header.copy_from_slice(&bytes[offset..offset+size_of::<ImageSectionHeader>()]);
+    
+            let buf_section_header: &ImageSectionHeader = unsafe { transmute(&buf_section_header) };
+            sections.push(buf_section_header.clone());
+            println!("{buf_section_header:?}");
+            let pointer_to_raw_data = buf_section_header.pointer_to_raw_data;
+            let virtual_address = buf_section_header.virtual_address;
+            let range = buf_section_header.virtual_address_range();
+            let import_table_address = buf_image_optional_header.import_table.virtual_address;
+            if import_table_address >= range.start && import_table_address < range.end {
+                let import_table_size = buf_image_optional_header.import_table.size as usize;
+                let base = (import_table_address - virtual_address + pointer_to_raw_data) as usize;
+                let import_table = &bytes[base.. base + import_table_size];
+                for offset in (0 .. import_table_size).step_by(size_of::<ImageImportDescriptor>()) {
+                    let import_descriptor: &ImageImportDescriptor = unsafe { transmute(import_table[offset..].as_ptr()) };
+                    println!("{import_descriptor:?}");
+                    let name = import_descriptor.name;
+                    let dll_name;
+                    if name >= range.start && name < range.end {
+                        let ptr = (name - virtual_address + pointer_to_raw_data) as usize;
+                        let section_size = buf_section_header.size_of_raw_data;
+                        let range_end = (pointer_to_raw_data + section_size) as usize;
+                        println!("0x{ptr:08x} to 0x:{range_end:08x} section_size 0x{section_size:08x}");
+                        dll_name = get_str(&bytes[ptr .. range_end]);
+                    } else {
+                        break;
+                    }
+                    let first_thunk = import_descriptor.first_thunk;
+                    if buf_section_header.in_range(first_thunk) {
+                        let file_offset = (first_thunk - virtual_address + pointer_to_raw_data) as usize;
+                        let mut entries = Vec::new();
+                        for ptr in (file_offset ..).step_by(4) {
+                            let ptr: &u32 = unsafe { transmute(bytes[ptr..].as_ptr()) };
+                            if *ptr > 0 {
+                                let offset = (*ptr - virtual_address + pointer_to_raw_data) as usize;
+                                if bytes.len() <= offset {
+                                    continue;
+                                }
+                                let entry = read_image_import_by_name(&bytes[offset..]);
+                                entries.push(entry);
+                            } else {
+                                break;
+                            }
+                        }
+                        imported.insert(dll_name, entries);
+                    }
+                }
+    
+            }
+            // println!("raw 0x{:08x}", virtual_address + pointer_to_raw_data - image_base);
+            offset += size_of::<ImageSectionHeader>();
+        }
+        Self {
+            sections,
+            bytes,
+            imported
+        }
+    }
+}
+
+
+fn get_str<'a>(bytes: &'a [u8]) -> &'a str {
+    let mut i = 0;
+    while bytes[i] > 0 {
+        i += 1;
+    }
+    unsafe {
+        transmute(&bytes[..i])
+    }
+}
 
 #[repr(packed)]
 #[allow(dead_code)]
@@ -109,6 +228,7 @@ impl fmt::Debug for ImageDataDirectory {
 
 #[repr(packed)]
 #[allow(dead_code)]
+#[derive(Clone)]
 struct ImageSectionHeader {
     name: [u8; 8],
     address: u32,
@@ -183,36 +303,15 @@ impl fmt::Debug for ImageImportDescriptor {
 }
 
 #[repr(packed)]
+#[allow(unused)]
 struct ImageImportByName {
     hint: u16,
     name: [u8],
 }
 
-fn show_image_import_by_name(ptr: &[u8]) {
+fn read_image_import_by_name(ptr: &[u8]) -> &str {
     let ptr: &ImageImportByName = unsafe { transmute(ptr) };
-    let mut buf_name = String::new();
-    let name = &ptr.name;
-    // print!("name [");
-    // for i in 0 .. 32 {
-    //     if i > 0 {
-    //         print!(", ");
-    //     }
-    //     print!("0x{:02x}", name[i]);
-    // }
-    // println!("]");
-    for &c in name {
-        if c > 0 {
-            buf_name.push(c as char);
-        } else {
-            break;
-        }
-    }
-    if buf_name.is_empty() {
-        let hint = ptr.hint;
-        println!("hint 0x{hint:04x} ({}, {})", hint % 256, hint / 256);
-    } else {
-        println!("+ {buf_name:?}");
-    }
+    get_str(&ptr.name)
 }
 
 fn main() {
@@ -221,128 +320,11 @@ fn main() {
 }
 
 fn dump(bytes: &[u8]) {
-    let mut buf_dos_header = [0u8; size_of::<DosHeader>()];
-
-    buf_dos_header.copy_from_slice(&bytes[0 .. size_of::<DosHeader>()]);
-
-    let buf_dos_header: &DosHeader = unsafe { transmute(&buf_dos_header) };
-
-    let size_dos_header = buf_dos_header.lfanew;
-    
-    let mut buf_image_file_header = [0u8; size_of::<ImageFileHeader>()];
-
-    let offset_pe_header = size_dos_header as usize;
-    let offset_image_file_header = offset_pe_header + 4;
-
-    let offset_image_optional_header = offset_image_file_header + size_of::<ImageFileHeader>();
-
-    buf_image_file_header.copy_from_slice(&bytes[offset_image_file_header .. offset_image_optional_header]);
-
-    let buf_image_file_header: &ImageFileHeader = unsafe { transmute(&buf_image_file_header) };
-
-    let machine = buf_image_file_header.machine;
-    println!("machine {machine:04x}");
-
-    let size_of_optional_header = buf_image_file_header.size_of_optional_header;
-    println!("size_of_optional_header {size_of_optional_header:04x}, expect {:04x}", size_of::<ImageOptionalHeader>());
-
-    let mut buf_image_optional_header = [0u8; size_of::<ImageOptionalHeader>()];
-    buf_image_optional_header.copy_from_slice(&bytes[offset_image_optional_header .. offset_image_optional_header + size_of::<ImageOptionalHeader>()]);
-
-    let buf_image_optional_header: &ImageOptionalHeader = unsafe { transmute(&buf_image_optional_header) };
-
-    println!("export_table {:?}", buf_image_optional_header.export_table);
-    println!("import_table {:?}", buf_image_optional_header.import_table);
-    let image_base = buf_image_optional_header.image_base;
-    println!("image_base 0x{image_base:08x}");
-
-    let mut offset = offset_image_optional_header + size_of::<ImageOptionalHeader>();
-
-    for _ in 0 .. buf_image_file_header.number_of_sections {
-        let mut buf_section_header = [0u8; size_of::<ImageSectionHeader>()];
-
-        buf_section_header.copy_from_slice(&bytes[offset..offset+size_of::<ImageSectionHeader>()]);
-
-        let buf_section_header: &ImageSectionHeader = unsafe { transmute(&buf_section_header) };
-        println!("{buf_section_header:?}");
-        let pointer_to_raw_data = buf_section_header.pointer_to_raw_data;
-        let virtual_address = buf_section_header.virtual_address;
-        let range = buf_section_header.virtual_address_range();
-        let import_table_address = buf_image_optional_header.import_table.virtual_address;
-        if import_table_address >= range.start && import_table_address < range.end {
-            let import_table_size = buf_image_optional_header.import_table.size as usize;
-            println!("import table found (size 0x{import_table_size:08x})");
-            println!("struct size 0x{:08x} remaining 0x{:08x}", size_of::<ImageImportDescriptor>(), import_table_size % size_of::<ImageImportDescriptor>());
-            let base = (import_table_address - virtual_address + pointer_to_raw_data) as usize;
-            println!("base 0x{base:08x}");
-            let import_table = &bytes[base.. base + import_table_size];
-            for offset in (0 .. import_table_size).step_by(size_of::<ImageImportDescriptor>()) {
-                let import_descriptor: &ImageImportDescriptor = unsafe { transmute(import_table[offset..].as_ptr()) };
-                println!("{import_descriptor:?}");
-                let name = import_descriptor.name;
-                // println!("name 0x{:08x}", name);
-                if name >= range.start && name < range.end {
-                    let ptr = (name - virtual_address + pointer_to_raw_data) as usize;
-                    let section_size = buf_section_header.size_of_raw_data;
-                    let range_end = (name - virtual_address + pointer_to_raw_data + section_size) as usize;
-                    let mut buf_name = String::new();
-                    for offset in ptr .. range_end{
-                        let c = bytes[offset];
-                        if c > 0 {
-                            buf_name.push(c as char);
-                        } else {
-                            break;
-                        }
-                    }
-                    println!("dll name {buf_name:?}");
-                } else {
-                    break;
-                }
-                // let original_first_thunk = import_descriptor.original_first_thunk;
-                // if buf_section_header.in_range(original_first_thunk) {
-                //     let file_offset = (original_first_thunk - virtual_address + pointer_to_raw_data) as usize;
-                //     println!("Try original_first_thunk 0x{original_first_thunk:08x} offset 0x{file_offset:08x}");
-                //     // show_image_import_by_name(&bytes[file_offset..]);
-                //     for ptr in (file_offset ..).step_by(4) {
-                //         let ptr: &u32 = unsafe { transmute(bytes[ptr..].as_ptr()) };
-                //         if *ptr > 0 {
-                //             show_image_import_by_name(&bytes[(*ptr - virtual_address + pointer_to_raw_data) as usize..]);
-                //         } else {
-                //             break;
-                //         }
-                //     }
-                // } else {
-                //     println!("original_first_thunk 0x{original_first_thunk:08x} missing");
-                // }
-                let first_thunk = import_descriptor.first_thunk;
-                if buf_section_header.in_range(first_thunk) {
-                    let file_offset = (first_thunk - virtual_address + pointer_to_raw_data) as usize;
-                    // println!("Try first_thunk 0x{first_thunk:08x} offset 0x{file_offset:08x}");
-                    // show_image_import_by_name(&bytes[file_offset..]);
-                    for ptr in (file_offset ..).step_by(4) {
-                        let ptr: &u32 = unsafe { transmute(bytes[ptr..].as_ptr()) };
-                        if *ptr > 0 {
-                            // println!("ptr 0x{:08x}", *ptr);
-                            let offset = (*ptr - virtual_address + pointer_to_raw_data) as usize;
-                            if bytes.len() <= offset {
-                                println!("offset 0x{offset:08x}");
-                                println!("offset in the wild");
-                                continue;
-                            }
-                            show_image_import_by_name(&bytes[offset..]);
-                        } else {
-                            break;
-                        }
-                    }
-                } else {
-                    println!("first_thunk 0x{first_thunk:08x} missing");
-                }
-            }
-
+    let pe = Pe::load(bytes);
+    for (dll, functions)  in pe.imported {
+        println!("{dll:?}");
+        for f in functions {
+            println!("+ {f:?}");
         }
-        // println!("raw 0x{:08x}", virtual_address + pointer_to_raw_data - image_base);
-        offset += size_of::<ImageSectionHeader>();
     }
-
-
 }
