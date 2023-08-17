@@ -25,39 +25,44 @@ impl<'a> Pe<'a> {
         let buf_dos_header: &DosHeader = unsafe { transmute(&buf_dos_header) };
     
         let size_dos_header = buf_dos_header.lfanew;
-        
-        let mut buf_image_file_header = [0u8; size_of::<ImageFileHeader>()];
     
         let offset_pe_header = size_dos_header as usize;
         let offset_image_file_header = offset_pe_header + 4;
     
         let offset_image_optional_header = offset_image_file_header + size_of::<ImageFileHeader>();
     
-        buf_image_file_header.copy_from_slice(&bytes[offset_image_file_header .. offset_image_optional_header]);
+        let ptr_image_file_header: &ImageFileHeader = unsafe { transmute(bytes[offset_image_file_header .. offset_image_optional_header].as_ptr()) };
     
-        let buf_image_file_header: &ImageFileHeader = unsafe { transmute(&buf_image_file_header) };
-    
-        let machine = buf_image_file_header.machine;
+        let machine = ptr_image_file_header.machine;
         println!("machine {machine:04x}");
-    
-        let size_of_optional_header = buf_image_file_header.size_of_optional_header as usize;
-        println!("size_of_optional_header {size_of_optional_header:04x}, expect {:04x}", size_of::<ImageOptionalHeader>());
-    
-        let mut buf_image_optional_header = [0u8; size_of::<ImageOptionalHeader>()];
-        let copy_size = size_of_optional_header.min(size_of::<ImageOptionalHeader>());
-        buf_image_optional_header[..copy_size].copy_from_slice(&bytes[offset_image_optional_header .. offset_image_optional_header + copy_size]);
-    
-        let buf_image_optional_header: &ImageOptionalHeader = unsafe { transmute(&buf_image_optional_header) };
 
-        let size_of_headers = buf_image_optional_header.size_of_headers;
+        let ref_image_optional_header: &dyn ImageOptionalHeaderTrait;
+    
+        let size_of_optional_header = ptr_image_file_header.size_of_optional_header as usize;
+        if size_of_optional_header == size_of::<ImageOptionalHeader>() {
+            let ptr_image_optional_header: &ImageOptionalHeader = unsafe { transmute(bytes[offset_image_optional_header .. offset_image_optional_header + size_of_optional_header].as_ptr()) };
+            ref_image_optional_header = ptr_image_optional_header;
+        }
+        else if size_of_optional_header == size_of::<ImageOptionalHeader64>() {
+            let ptr_image_optional_header: &ImageOptionalHeader64 = unsafe { transmute(bytes[offset_image_optional_header .. offset_image_optional_header + size_of_optional_header].as_ptr()) };
+            ref_image_optional_header = ptr_image_optional_header;
+        }
+        else {
+            panic!("unknown size of optional header");
+        }
+
+        let size_of_headers = ref_image_optional_header.size_of_headers();
         println!("size_of_headers 0x{size_of_headers:08x}");
+
+        let import_table_address = ref_image_optional_header.import_table().virtual_address;
+        println!("import_table_address 0x{import_table_address:08x}");
 
         let mut sections = Vec::new();
         let mut imported = HashMap::new();
     
         let mut offset = offset_image_optional_header + size_of_optional_header;
     
-        for _ in 0 .. buf_image_file_header.number_of_sections {
+        for _ in 0 .. ptr_image_file_header.number_of_sections {
             let mut buf_section_header = [0u8; size_of::<ImageSectionHeader>()];
     
             buf_section_header.copy_from_slice(&bytes[offset..offset+size_of::<ImageSectionHeader>()]);
@@ -72,9 +77,9 @@ impl<'a> Pe<'a> {
             let pointer_to_raw_data = buf_section_header.pointer_to_raw_data;
             let virtual_address = buf_section_header.virtual_address;
             let range = buf_section_header.virtual_address_range();
-            let import_table_address = buf_image_optional_header.import_table.virtual_address;
+            
             if import_table_address >= range.start && import_table_address < range.end {
-                let import_table_size = buf_image_optional_header.import_table.size as usize;
+                let import_table_size = ref_image_optional_header.import_table().size as usize;
                 let base = (import_table_address - virtual_address + pointer_to_raw_data) as usize;
                 let import_table = &bytes[base.. base + import_table_size];
                 for offset in (0 .. import_table_size).step_by(size_of::<ImageImportDescriptor>()) {
@@ -225,6 +230,80 @@ struct ImageOptionalHeader {
     delay_import_descriptor: ImageDataDirectory,
     clr_runtime_header: ImageDataDirectory,
     reserved: ImageDataDirectory,
+}
+
+#[repr(packed)]
+#[allow(dead_code)]
+struct ImageOptionalHeader64 {
+    magic: u16,
+    major_linker_version: u8,
+    minor_linker_version: u8,
+    size_of_code: u32,
+    size_of_initialized_data: u32,
+    size_of_uninitialized_data: u32,
+    address_of_entry_point: u32,
+    base_of_code: u32,
+    image_base: u64,
+    section_alignment: u32,
+    file_alignment: u32,
+    major_operating_system_version: u16,
+    minor_operating_system_version: u16,
+    major_image_version: u16,
+    minor_image_version: u16,
+    major_subsystem_version: u16,
+    minor_subsystem_version: u16,
+    win32_version_value: u32,
+    size_of_image: u32,
+    size_of_headers: u32,
+    check_sum: u32,
+    subsystem: u16,
+    dll_characteristics: u16,
+    size_of_stack_reserve: u64,
+    size_of_stack_commit: u64,
+    size_of_heap_reserve: u64,
+    size_of_heap_commit: u64,
+    loader_flags: u32,
+    number_of_rva_and_sizes: u32,
+
+    export_table: ImageDataDirectory,
+    import_table: ImageDataDirectory,
+    resource_table: ImageDataDirectory,
+    exception_table: ImageDataDirectory,
+    certificate_table: ImageDataDirectory,
+    base_relocation_table: ImageDataDirectory,
+    debug: ImageDataDirectory,
+    architecture: ImageDataDirectory,
+    global_ptr: ImageDataDirectory,
+    tls_table: ImageDataDirectory,
+    load_config_table: ImageDataDirectory,
+    bound_import: ImageDataDirectory,
+    iat: ImageDataDirectory,
+    delay_import_descriptor: ImageDataDirectory,
+    clr_runtime_header: ImageDataDirectory,
+    reserved: ImageDataDirectory,
+}
+
+trait ImageOptionalHeaderTrait {
+    fn import_table<'a>(&'a self) -> &'a ImageDataDirectory;
+    fn size_of_headers(&self) -> u32;
+}
+
+impl ImageOptionalHeaderTrait for ImageOptionalHeader {
+    fn import_table<'a>(&'a self) -> &'a ImageDataDirectory {
+        &self.import_table
+    }
+    fn size_of_headers(&self) -> u32 {
+        self.size_of_headers
+    }
+}
+
+impl ImageOptionalHeaderTrait for ImageOptionalHeader64 {
+    fn import_table<'a>(&'a self) -> &'a ImageDataDirectory {
+        &self.import_table
+    }
+    fn size_of_headers(&self) -> u32 {
+        self.size_of_headers
+    }
 }
 
 #[repr(packed)]
