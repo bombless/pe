@@ -1,13 +1,19 @@
 use std::fmt;
 use std::ops::Range;
 use std::mem::{size_of, transmute};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 #[allow(unused)]
 struct Pe<'a> {
     bytes: &'a [u8],
     sections: Vec<ImageSectionHeader>,
-    imported: HashMap<&'a str, Vec<&'a str>>,
+    imported: HashMap<&'a str, HashSet<Fun<'a>>>,
+}
+
+#[derive(PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
+enum Fun<'a> {
+    Name(&'a str),
+    Hint(u32),
 }
 
 impl<'a> Pe<'a> {
@@ -42,6 +48,9 @@ impl<'a> Pe<'a> {
     
         let buf_image_optional_header: &ImageOptionalHeader = unsafe { transmute(&buf_image_optional_header) };
 
+        let size_of_headers = buf_image_optional_header.size_of_headers;
+        println!("size_of_headers 0x{size_of_headers:08x}");
+
         let mut sections = Vec::new();
         let mut imported = HashMap::new();
     
@@ -55,6 +64,10 @@ impl<'a> Pe<'a> {
             let buf_section_header: &ImageSectionHeader = unsafe { transmute(&buf_section_header) };
             sections.push(buf_section_header.clone());
             println!("{buf_section_header:?}");
+            if buf_section_header.virtual_address == 0 {
+                offset += size_of::<ImageSectionHeader>();
+                continue;
+            }
             let pointer_to_raw_data = buf_section_header.pointer_to_raw_data;
             let virtual_address = buf_section_header.virtual_address;
             let range = buf_section_header.virtual_address_range();
@@ -73,23 +86,26 @@ impl<'a> Pe<'a> {
                         let section_size = buf_section_header.size_of_raw_data;
                         let range_end = (pointer_to_raw_data + section_size) as usize;
                         println!("0x{ptr:08x} to 0x:{range_end:08x} section_size 0x{section_size:08x}");
-                        dll_name = get_str(&bytes[ptr .. range_end]);
+                        dll_name = get_str(&bytes[ptr .. ]);
                     } else {
                         break;
                     }
                     let first_thunk = import_descriptor.first_thunk;
                     if buf_section_header.in_range(first_thunk) {
                         let file_offset = (first_thunk - virtual_address + pointer_to_raw_data) as usize;
-                        let mut entries = Vec::new();
+                        let mut entries = HashSet::new();
                         for ptr in (file_offset ..).step_by(4) {
                             let ptr: &u32 = unsafe { transmute(bytes[ptr..].as_ptr()) };
+                            if *ptr & (1 << 31) > 0 {
+                                entries.insert(Fun::Hint(*ptr & !(1 << 31)));
+                            }
                             if *ptr > 0 {
                                 let offset = (*ptr - virtual_address + pointer_to_raw_data) as usize;
                                 if bytes.len() <= offset {
                                     continue;
                                 }
                                 let entry = read_image_import_by_name(&bytes[offset..]);
-                                entries.push(entry);
+                                entries.insert(Fun::Name(entry));
                             } else {
                                 break;
                             }
@@ -270,6 +286,7 @@ impl fmt::Debug for ImageSectionHeader {
         let from = pointer_to_raw_data;
         let to = from + size_of_raw_data;
         let map_from = virtual_address;
+        println!("map_to = 0x{map_from:08x} + 0x{size_of_raw_data:08x}");
         let map_to = map_from + size_of_raw_data;
         write!(f, "(0x{from:08x}..0x{to:08x} => 0x{map_from:08x}..{map_to:08x})")?;
         write!(f, " {{ ")?;
@@ -315,7 +332,8 @@ fn read_image_import_by_name(ptr: &[u8]) -> &str {
 }
 
 fn main() {
-    dump(include_bytes!("../7-zip.dll"));
+    // dump(include_bytes!("../hello.exe"));
+    // dump(include_bytes!("../7-zip.dll"));
     dump(include_bytes!("../unzip.dll"));
 }
 
