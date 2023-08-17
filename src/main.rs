@@ -40,11 +40,12 @@ impl<'a> Pe<'a> {
         let machine = buf_image_file_header.machine;
         println!("machine {machine:04x}");
     
-        let size_of_optional_header = buf_image_file_header.size_of_optional_header;
+        let size_of_optional_header = buf_image_file_header.size_of_optional_header as usize;
         println!("size_of_optional_header {size_of_optional_header:04x}, expect {:04x}", size_of::<ImageOptionalHeader>());
     
         let mut buf_image_optional_header = [0u8; size_of::<ImageOptionalHeader>()];
-        buf_image_optional_header.copy_from_slice(&bytes[offset_image_optional_header .. offset_image_optional_header + size_of::<ImageOptionalHeader>()]);
+        let copy_size = size_of_optional_header.min(size_of::<ImageOptionalHeader>());
+        buf_image_optional_header[..copy_size].copy_from_slice(&bytes[offset_image_optional_header .. offset_image_optional_header + copy_size]);
     
         let buf_image_optional_header: &ImageOptionalHeader = unsafe { transmute(&buf_image_optional_header) };
 
@@ -54,7 +55,7 @@ impl<'a> Pe<'a> {
         let mut sections = Vec::new();
         let mut imported = HashMap::new();
     
-        let mut offset = offset_image_optional_header + size_of::<ImageOptionalHeader>();
+        let mut offset = offset_image_optional_header + size_of_optional_header;
     
         for _ in 0 .. buf_image_file_header.number_of_sections {
             let mut buf_section_header = [0u8; size_of::<ImageSectionHeader>()];
@@ -332,9 +333,9 @@ fn read_image_import_by_name(ptr: &[u8]) -> &str {
 }
 
 fn main() {
-    // dump(include_bytes!("../hello.exe"));
+    dump(include_bytes!("../hello.exe"));
     // dump(include_bytes!("../7-zip.dll"));
-    dump(include_bytes!("../unzip.dll"));
+    // dump(include_bytes!("../unzip.dll"));
 }
 
 fn dump(bytes: &[u8]) {
